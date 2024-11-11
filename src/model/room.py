@@ -29,7 +29,6 @@ class RoomModel(Model):
         self.current_time = 0
         self.running = True
 
-        # Métricas
         self.movements_count = 0
         self.clean_cells_count = 0
         self.initial_dirty_cells = 0
@@ -37,7 +36,6 @@ class RoomModel(Model):
         self.grid = MultiGrid(width, height, False)
         self.schedule = RandomActivation(self)
 
-        # Add DataCollector
         self.datacollector = DataCollector(
             model_reporters={
                 "Clean_Percentage": lambda m: (
@@ -60,14 +58,47 @@ class RoomModel(Model):
                 "Movements": lambda a: a.movements if isinstance(a, Roomba) else None,
             },
         )
+        self.datacollector = DataCollector(
+            model_reporters={
+                "Clean_Percentage": lambda m: (
+                    sum(1 for x in range(m.width) for y in range(m.height)
+                        if m.grid.get_cell_list_contents([(x, y)])[0].state == "clean")
+                    / (m.width * m.height) * 100
+                ),
+                "Total_Movements": lambda m: sum(
+                    roomba.movements for roomba in m.roombas
+                ),
+                "Average_Battery": lambda m: (
+                    sum(roomba.battery for roomba in m.roombas) / len(m.roombas)
+                    if m.roombas else 0
+                ),
+                "Explored_Cells_Percentage": lambda m: (
+                    sum(len(roomba.explored_cells) for roomba in m.roombas) 
+                    / (m.width * m.height) * 100
+                ),
+                "Cleaned_Cells_Percentage": lambda m: (
+                    (m.clean_cells_count / (m.width * m.height)) * 100
+                ),
+                "Cleaning_Efficiency": lambda m: (
+                    (m.clean_cells_count / max(sum(roomba.movements for roomba in m.roombas), 1)) * 100
+                    if m.roombas else 0
+                ),
+                "Battery_Efficiency": lambda m: (
+                    (m.clean_cells_count / max(sum(100 - roomba.battery for roomba in m.roombas), 1)) * 100
+                    if m.roombas else 0
+                ),
+            },
+            agent_reporters={
+                "Battery": lambda a: a.battery if isinstance(a, Roomba) else None,
+                "Movements": lambda a: a.movements if isinstance(a, Roomba) else None,
+            },
+        )
 
-        # Initialize the grid and agents
         self.init_grid()
         self.init_roombas()
 
     def init_grid(self):
         """Initialize the grid with cells"""
-        # Create all clean cells first
         cell_id = 0
         for x in range(self.width):
             for y in range(self.height):
@@ -91,7 +122,7 @@ class RoomModel(Model):
         # Reserve charging station position for single agent
         if self.n_agents == 1:
             positions.remove((1, 1))
-            total_cells -= 1  # Reduce available cells by 1 for charging station
+            total_cells -= 1  
 
         # Calculate number of dirty and obstacle cells
         dirty_cells = min(int(total_cells * self.dirty_percent), len(positions))
@@ -103,7 +134,7 @@ class RoomModel(Model):
                 cell = self.grid.get_cell_list_contents([pos])[0]
                 cell.set_state("dirty")
                 self.clean_cells_count -= 1
-                positions.remove(pos)  # Remove used positions
+                positions.remove(pos)  
 
             self.initial_dirty_cells = dirty_cells
 
@@ -135,11 +166,11 @@ class RoomModel(Model):
             cell = self.grid.get_cell_list_contents([initial_pos])[0]
             cell.set_state("charging_station")
             # Create roomba without initial position
-            roomba = Roomba(self.next_id(), self, None)  # Initialize with None position
+            roomba = Roomba(self.next_id(), self, None)  
             self.roombas.append(roomba)
             self.schedule.add(roomba)
             self.grid.place_agent(roomba, initial_pos)
-            roomba.pos = initial_pos  # Set position after placement
+            roomba.pos = initial_pos  
             roomba.home_charger = initial_pos
         else:
             # Multiple agents at random positions
@@ -170,7 +201,7 @@ class RoomModel(Model):
                     self.roombas.append(roomba)
                     self.schedule.add(roomba)
                     self.grid.place_agent(roomba, pos)
-                    roomba.pos = pos  # Set position after placement
+                    roomba.pos = pos  
                     roomba.home_charger = pos
 
     def get_metrics(self):

@@ -27,23 +27,21 @@ class CellKnowledge(Enum):
 class Roomba(Agent):
     def __init__(self, unique_id, model, pos):
         super().__init__(unique_id, model)
-        # Basic attributes
         self.battery = 100
         self.pos = pos
         self.home_charger = None
         self.last_action = RoombaActions.IDLE
         self.movements = 0
 
-        # Modified battery constants
-        self.BATTERY_CRITICAL = 20  # Higher threshold for returning to charger
-        self.BATTERY_SAFE = 90  # Threshold to resume normal operation
-        self.MOVE_COST = 1  # Battery cost for moving
-        self.CLEAN_COST = 2  # Battery cost for cleaning
-        self.CHARGE_RATE = 10  # Increased charging rate
+        self.BATTERY_CRITICAL = 20 
+        self.BATTERY_SAFE = 90 
+        self.MOVE_COST = 1  
+        self.CLEAN_COST = 2  
+        self.CHARGE_RATE = 10  
 
         # Knowledge and memory systems
         self.knowledge_matrix = np.full((3, 3), CellKnowledge.UNKNOWN.value)
-        self.matrix_center = (1, 1)  # Start at center of 3x3 matrix
+        self.matrix_center = (1, 1)  
         self.dirty_cells_memory = set()
         self.visited_cells = set()
         self.explored_cells = set()
@@ -80,7 +78,7 @@ class Roomba(Agent):
         )
 
         # Add safety margin
-        return_cost = path_cost + 15  # Increased safety margin
+        return_cost = path_cost + 15  
 
         should_return = self.battery <= return_cost + self.BATTERY_CRITICAL
         return should_return
@@ -122,7 +120,6 @@ class Roomba(Agent):
         matrix_x = self.matrix_center[0]
         matrix_y = self.matrix_center[1]
 
-        # Check matrix expansion needs
         if matrix_x <= 1:
             self.expand_knowledge_matrix("north")
         if matrix_x >= self.knowledge_matrix.shape[0] - 2:
@@ -187,6 +184,11 @@ class Roomba(Agent):
 
     def find_path_to_target(self, target_pos):
         """A* pathfinding implementation"""
+        def is_valid_move(pos):
+            if not self.is_valid_position(pos):
+                return False
+            cell = self.get_cell_at_pos(pos)
+            return not (cell and hasattr(cell, "state") and cell.state == "obstacle")
 
         def heuristic(pos1, pos2):
             return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
@@ -211,8 +213,9 @@ class Roomba(Agent):
             open_set = [(f, pos) for f, pos in open_set if pos != current]
 
             for next_pos in self.get_possible_moves():
+                if not is_valid_move(next_pos):
+                    continue
                 tentative_g_score = g_score[current] + 1
-
                 if next_pos not in g_score or tentative_g_score < g_score[next_pos]:
                     came_from[next_pos] = current
                     g_score[next_pos] = tentative_g_score
@@ -220,7 +223,6 @@ class Roomba(Agent):
                         next_pos, target_pos
                     )
                     open_set.append((f_score[next_pos], next_pos))
-
         return None
 
     def get_unexplored_frontier(self):
@@ -258,7 +260,7 @@ class Roomba(Agent):
         self.model.grid.remove_agent(self)
         self.model.grid.place_agent(self, new_pos)
         self.pos = new_pos
-        self.battery -= self.MOVE_COST  # Only deduct once!
+        self.battery -= self.MOVE_COST  
         self.movements += 1
         self.update_knowledge()
         return True
@@ -294,7 +296,6 @@ class Roomba(Agent):
 
     def step(self):
         """Main decision-making logic"""
-        # Update knowledge first
         self.update_knowledge()
 
         # Check if at charging station and should charge
@@ -306,29 +307,31 @@ class Roomba(Agent):
         if self.should_return_to_charger():
             path = self.find_path_to_target(self.home_charger)
             if path and len(path) > 1:
-                # Check if we have enough battery for the next move
                 if self.battery >= self.MOVE_COST:
-                    success = self.move(path[1])
-                return
-            else:
-                # Try all possible directions towards charger
-                possible_moves = self.get_possible_moves()
-                if not possible_moves:
-                    return
-
-                # Sort moves by distance to charger
-                moves_with_distances = []
-                for possible_pos in possible_moves:
-                    dist_to_charger = abs(possible_pos[0] - self.home_charger[0]) + abs(
-                        possible_pos[1] - self.home_charger[1]
-                    )
-                    moves_with_distances.append((dist_to_charger, possible_pos))
-
-                # Try the move that gets us closest to charger
-                moves_with_distances.sort()  # Sort by distance
-                for _, move_pos in moves_with_distances:
-                    if self.move(move_pos):
+                    next_pos = path[1]
+                    # Verify the next position is actually reachable
+                    if next_pos in self.get_possible_moves():
+                        self.move(next_pos)
                         return
+            
+            # If no path or next move isn't possible, try emergency 
+            possible_moves = self.get_possible_moves()
+            if possible_moves:
+                # Sort moves by distance to charger
+                moves_with_distances = [
+                    (abs(pos[0] - self.home_charger[0]) + abs(pos[1] - self.home_charger[1]), pos)
+                    for pos in possible_moves
+                ]
+                moves_with_distances.sort()  # Sort by distance
+                
+                # Try moves in order of closest to charger
+                for _, move_pos in moves_with_distances:
+                    # Double check this move 
+                    if self.battery >= self.MOVE_COST:
+                        if self.move(move_pos):
+                            return
+    
+                self.BATTERY_CRITICAL += 5  
                 return
 
         # Clean current cell if dirty

@@ -20,7 +20,7 @@ def agent_portrayal(agent):
             "text": f"{agent.battery}%",
             "text_color": "white",
         }
-    else:  # Cell agent
+    else:  
         portrayal = {"Shape": "rect", "w": 1, "h": 1, "Filled": "true", "Layer": 0}
         colors = {
             "clean": "white",
@@ -45,29 +45,36 @@ def find_free_port():
     return None
 
 def create_server():
-    # Use fixed grid size of 10x10
     GRID_SIZE = 10
     
-    # Create grid visualization with fixed size
     grid = CanvasGrid(agent_portrayal, GRID_SIZE, GRID_SIZE)
     
-    # Create charts for monitoring metrics
+    # Primera gráfica: Limpieza y Movimientos
     clean_chart = ChartModule([
         {"Label": "Clean_Percentage", "Color": "#00CC00"},
         {"Label": "Total_Movements", "Color": "#CC0000"},
     ])
 
-    # Pie chart for cell states
-    pie_chart = PieChartModule([
-        {"Label": "Clean", "Color": "white"},
-        {"Label": "Dirty", "Color": "brown"},
-        {"Label": "Obstacle", "Color": "gray"},
+    # Segunda gráfica: Nivel de batería
+    battery_chart = ChartModule([
+        {"Label": "Average_Battery", "Color": "#0000FF"},
     ])
 
-    # Model parameters with sliders (width and height are now fixed)
+    # Tercera gráfica: Exploración vs Limpieza
+    exploration_chart = ChartModule([
+        {"Label": "Explored_Cells_Percentage", "Color": "#FF6600"},
+        {"Label": "Cleaned_Cells_Percentage", "Color": "#9933FF"},
+    ])
+
+    # Cuarta gráfica: Eficiencia de limpieza
+    efficiency_chart = ChartModule([
+        {"Label": "Cleaning_Efficiency", "Color": "#FF0099"},
+        {"Label": "Battery_Efficiency", "Color": "#33CC33"},
+    ])
+    
     model_params = {
-        "width": GRID_SIZE,  # Fixed value
-        "height": GRID_SIZE,  # Fixed value
+        "width": GRID_SIZE,
+        "height": GRID_SIZE,
         "n_agents": Slider("Number of Roombas", 1, 1, 5, 1),
         "dirty_percent": Slider("Initial Dirty Cells", 0.3, 0.0, 1.0, 0.05),
         "obstacle_percent": Slider("Obstacle Percentage", 0.2, 0.0, 0.5, 0.05),
@@ -81,7 +88,7 @@ def create_server():
 
     server = ModularServer(
         RoomModel,
-        [grid, clean_chart, pie_chart],
+        [grid, clean_chart, battery_chart, exploration_chart, efficiency_chart],
         "Roomba Cleaning Simulation",
         model_params,
     )
