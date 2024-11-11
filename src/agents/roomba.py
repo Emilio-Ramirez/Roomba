@@ -1,5 +1,8 @@
 from mesa import Agent
 from enum import Enum
+import numpy as np
+from collections import deque
+import heapq
 
 
 class RoombaActions(Enum):
@@ -12,140 +15,350 @@ class RoombaActions(Enum):
     IDLE = "idle"
 
 
+class CellKnowledge(Enum):
+    UNKNOWN = 0
+    WALL = 1
+    OBSTACLE = 2
+    CHARGING_STATION = 3
+    EMPTY = 4
+    DIRTY = 5
+
+
 class Roomba(Agent):
     def __init__(self, unique_id, model, pos):
         super().__init__(unique_id, model)
-        self.battery = 100  # Start with 100% battery
-        self.pos = None  # Initialize position as None
-        self.home_charger = None  # Initialize home charger as None
+        # Basic attributes
+        self.battery = 100
+        self.pos = pos
+        self.home_charger = None
         self.last_action = RoombaActions.IDLE
-        self.movements = 0  # Counter for movements
+        self.movements = 0
 
-    def move(self, new_pos):
-        """Try to move to a new position"""
-        if self.battery <= 0:
-            return False
+        # Modified battery constants
+        self.BATTERY_CRITICAL = 20  # Higher threshold for returning to charger
+        self.BATTERY_SAFE = 90  # Threshold to resume normal operation
+        self.MOVE_COST = 1  # Battery cost for moving
+        self.CLEAN_COST = 2  # Battery cost for cleaning
+        self.CHARGE_RATE = 10  # Increased charging rate
 
-        # Check if the new position is within grid bounds
-        if not (
-            0 <= new_pos[0] < self.model.grid.width
-            and 0 <= new_pos[1] < self.model.grid.height
-        ):
-            return False
+        # Knowledge and memory systems
+        self.knowledge_matrix = np.full((3, 3), CellKnowledge.UNKNOWN.value)
+        self.matrix_center = (1, 1)  # Start at center of 3x3 matrix
+        self.dirty_cells_memory = set()
+        self.visited_cells = set()
+        self.explored_cells = set()
 
-        # Check for obstacles
-        cell_contents = self.model.grid.get_cell_list_contents([new_pos])
-        for content in cell_contents:
-            if hasattr(content, "state") and content.state == "obstacle":
-                return False
+    def estimate_return_cost(self):
+        """Estimate battery needed to return to charging station"""
+        if not self.home_charger:
+            return 0
 
-        # Remove agent from current position before moving
-        self.model.grid.remove_agent(self)
-        # Move to new position
-        self.model.grid.place_agent(self, new_pos)
-        self.battery -= 1  # Moving costs 1% battery
-        self.movements += 1  # Increment movement counter
-        return True
+        path = self.find_path_to_target(self.home_charger)
+        if path:
+            return len(path) * self.MOVE_COST
+        # Fallback to Manhattan distance if no path found
+        return abs(self.pos[0] - self.home_charger[0]) + abs(
+            self.pos[1] - self.home_charger[1]
+        )
+
+    def should_return_to_charger(self):
+        """Determine if Roomba should return to charger"""
+
+        # First check if battery is critical
+        if self.battery <= self.BATTERY_CRITICAL:
+            return True
+
+        # Calculate Manhattan distance to charger
+        manhattan_distance = abs(self.pos[0] - self.home_charger[0]) + abs(
+            self.pos[1] - self.home_charger[1]
+        )
+
+        # Get actual path cost if possible
+        path = self.find_path_to_target(self.home_charger)
+        path_cost = (
+            len(path) * self.MOVE_COST if path else manhattan_distance * self.MOVE_COST
+        )
+
+        # Add safety margin
+        return_cost = path_cost + 15  # Increased safety margin
+
+        should_return = self.battery <= return_cost + self.BATTERY_CRITICAL
+        return should_return
+
+    def charge_battery(self):
+        """Modified charging with higher rate"""
+        current_cell = self.get_cell_at_pos(self.pos)
+        if current_cell and current_cell.state == "charging_station":
+            self.battery = min(100, self.battery + self.CHARGE_RATE)
+            self.last_action = RoombaActions.CHARGE
+            return True
+        return False
+
+    def expand_knowledge_matrix(self, direction):
+        """Expands the knowledge matrix when discovering new areas"""
+        current_shape = self.knowledge_matrix.shape
+
+        if direction == "north":
+            new_row = np.full((1, current_shape[1]), CellKnowledge.UNKNOWN.value)
+            self.knowledge_matrix = np.vstack((new_row, self.knowledge_matrix))
+            self.matrix_center = (self.matrix_center[0] + 1, self.matrix_center[1])
+
+        elif direction == "south":
+            new_row = np.full((1, current_shape[1]), CellKnowledge.UNKNOWN.value)
+            self.knowledge_matrix = np.vstack((self.knowledge_matrix, new_row))
+
+        elif direction == "west":
+            new_col = np.full((current_shape[0], 1), CellKnowledge.UNKNOWN.value)
+            self.knowledge_matrix = np.hstack((new_col, self.knowledge_matrix))
+            self.matrix_center = (self.matrix_center[0], self.matrix_center[1] + 1)
+
+        elif direction == "east":
+            new_col = np.full((current_shape[0], 1), CellKnowledge.UNKNOWN.value)
+            self.knowledge_matrix = np.hstack((self.knowledge_matrix, new_col))
+
+    def update_knowledge(self):
+        """Update knowledge of the environment"""
+        self.visited_cells.add(self.pos)
+        matrix_x = self.matrix_center[0]
+        matrix_y = self.matrix_center[1]
+
+        # Check matrix expansion needs
+        if matrix_x <= 1:
+            self.expand_knowledge_matrix("north")
+        if matrix_x >= self.knowledge_matrix.shape[0] - 2:
+            self.expand_knowledge_matrix("south")
+        if matrix_y <= 1:
+            self.expand_knowledge_matrix("west")
+        if matrix_y >= self.knowledge_matrix.shape[1] - 2:
+            self.expand_knowledge_matrix("east")
+
+        # Update current cell knowledge
+        current_cell = self.get_cell_at_pos(self.pos)
+        if current_cell:
+            if current_cell.state == "obstacle":
+                self.knowledge_matrix[matrix_x, matrix_y] = CellKnowledge.OBSTACLE.value
+            elif current_cell.state == "charging_station":
+                self.knowledge_matrix[matrix_x, matrix_y] = (
+                    CellKnowledge.CHARGING_STATION.value
+                )
+            elif current_cell.state == "dirty":
+                self.knowledge_matrix[matrix_x, matrix_y] = CellKnowledge.DIRTY.value
+                self.dirty_cells_memory.add(self.pos)
+            else:
+                self.knowledge_matrix[matrix_x, matrix_y] = CellKnowledge.EMPTY.value
+                if self.pos in self.dirty_cells_memory:
+                    self.dirty_cells_memory.remove(self.pos)
+
+        # Update adjacent cells knowledge
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            adj_x = matrix_x + dx
+            adj_y = matrix_y + dy
+            world_pos = (self.pos[0] + dx, self.pos[1] + dy)
+
+            adj_cell = self.get_cell_at_pos(world_pos)
+            if adj_cell:
+                self.explored_cells.add(world_pos)
+                if adj_cell.state == "obstacle":
+                    self.knowledge_matrix[adj_x, adj_y] = CellKnowledge.OBSTACLE.value
+                elif adj_cell.state == "charging_station":
+                    self.knowledge_matrix[adj_x, adj_y] = (
+                        CellKnowledge.CHARGING_STATION.value
+                    )
+                elif adj_cell.state == "dirty":
+                    self.knowledge_matrix[adj_x, adj_y] = CellKnowledge.DIRTY.value
+                    self.dirty_cells_memory.add(world_pos)
+                else:
+                    self.knowledge_matrix[adj_x, adj_y] = CellKnowledge.EMPTY.value
+            else:
+                self.knowledge_matrix[adj_x, adj_y] = CellKnowledge.WALL.value
 
     def get_cell_at_pos(self, pos):
-        """Get the cell at a specific position"""
+        """Get cell at specific position"""
+        if not (
+            0 <= pos[0] < self.model.grid.width and 0 <= pos[1] < self.model.grid.height
+        ):
+            return None
+
         cell_contents = self.model.grid.get_cell_list_contents([pos])
         for content in cell_contents:
             if hasattr(content, "state"):
                 return content
         return None
 
+    def find_path_to_target(self, target_pos):
+        """A* pathfinding implementation"""
+
+        def heuristic(pos1, pos2):
+            return abs(pos1[0] - pos2[0]) + abs(pos1[1] - pos2[1])
+
+        start = self.pos
+        open_set = [(0, start)]
+        came_from = {}
+        g_score = {start: 0}
+        f_score = {start: heuristic(start, target_pos)}
+
+        while open_set:
+            current = min(open_set, key=lambda x: x[0])[1]
+            if current == target_pos:
+                path = []
+                while current in came_from:
+                    path.append(current)
+                    current = came_from[current]
+                path.append(start)
+                path.reverse()
+                return path
+
+            open_set = [(f, pos) for f, pos in open_set if pos != current]
+
+            for next_pos in self.get_possible_moves():
+                tentative_g_score = g_score[current] + 1
+
+                if next_pos not in g_score or tentative_g_score < g_score[next_pos]:
+                    came_from[next_pos] = current
+                    g_score[next_pos] = tentative_g_score
+                    f_score[next_pos] = g_score[next_pos] + heuristic(
+                        next_pos, target_pos
+                    )
+                    open_set.append((f_score[next_pos], next_pos))
+
+        return None
+
+    def get_unexplored_frontier(self):
+        """Get positions adjacent to known cells that are still unknown"""
+        frontier = set()
+        for explored in self.explored_cells:
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                adj_pos = (explored[0] + dx, explored[1] + dy)
+                if adj_pos not in self.explored_cells:
+                    if self.is_valid_position(adj_pos):
+                        frontier.add(adj_pos)
+        return frontier
+
+    def is_valid_position(self, pos):
+        """Check if a position is valid"""
+        return (
+            0 <= pos[0] < self.model.grid.width and 0 <= pos[1] < self.model.grid.height
+        )
+
+    def move(self, new_pos):
+        """Execute movement with battery management"""
+        if self.battery < self.MOVE_COST:
+            return False
+
+        if not self.is_valid_position(new_pos):
+            return False
+
+        cell_contents = self.model.grid.get_cell_list_contents([new_pos])
+        if any(
+            hasattr(content, "state") and content.state == "obstacle"
+            for content in cell_contents
+        ):
+            return False
+
+        self.model.grid.remove_agent(self)
+        self.model.grid.place_agent(self, new_pos)
+        self.pos = new_pos
+        self.battery -= self.MOVE_COST  # Only deduct once!
+        self.movements += 1
+        self.update_knowledge()
+        return True
+
     def clean_current_cell(self):
-        """Clean the current cell if it's dirty"""
+        """Clean current cell if dirty"""
         if self.battery <= 0:
             return False
 
         current_cell = self.get_cell_at_pos(self.pos)
         if current_cell and current_cell.state == "dirty":
             current_cell.set_state("clean")
-            self.battery -= 1  # Cleaning costs 1% battery
+            self.battery -= 1
             self.last_action = RoombaActions.CLEAN
-            return True
-        return False
-
-    def charge_battery(self):
-        """Charge battery if at charging station"""
-        current_cell = self.get_cell_at_pos(self.pos)
-        if current_cell and current_cell.state == "charging_station":
-            self.battery = min(100, self.battery + 5)  # Charge 5% per step
-            self.last_action = RoombaActions.CHARGE
+            if self.pos in self.dirty_cells_memory:
+                self.dirty_cells_memory.remove(self.pos)
             return True
         return False
 
     def get_possible_moves(self):
-        """Get all possible moves from current position"""
+        """Get all valid moves from current position"""
         possible_moves = []
-        x, y = self.pos
-
-        # Check all adjacent cells
-        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:  # up, down, right, left
-            new_pos = (x + dx, y + dy)
-
-            # Check if position is within grid bounds
-            if not (
-                0 <= new_pos[0] < self.model.grid.width
-                and 0 <= new_pos[1] < self.model.grid.height
-            ):
-                continue
-
-            # Check for obstacles
-            cell_contents = self.model.grid.get_cell_list_contents([new_pos])
-            is_obstacle = any(
-                hasattr(content, "state") and content.state == "obstacle"
-                for content in cell_contents
-            )
-
-            if not is_obstacle:
-                possible_moves.append(new_pos)
-
+        for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            new_pos = (self.pos[0] + dx, self.pos[1] + dy)
+            if self.is_valid_position(new_pos):
+                cell_contents = self.model.grid.get_cell_list_contents([new_pos])
+                if not any(
+                    hasattr(content, "state") and content.state == "obstacle"
+                    for content in cell_contents
+                ):
+                    possible_moves.append(new_pos)
         return possible_moves
 
     def step(self):
-        """Implement basic behavior"""
-        if self.pos == self.home_charger and self.battery < 100:
+        """Main decision-making logic"""
+        # Update knowledge first
+        self.update_knowledge()
+
+        # Check if at charging station and should charge
+        if self.pos == self.home_charger and self.battery < self.BATTERY_SAFE:
             self.charge_battery()
-            self.last_action = RoombaActions.CHARGE
             return
-        if self.battery <= 20:  # If battery is low, try to return to charging station
-            if self.pos == self.home_charger:
-                self.charge_battery()
+
+        # Check if should return to charger
+        if self.should_return_to_charger():
+            path = self.find_path_to_target(self.home_charger)
+            if path and len(path) > 1:
+                # Check if we have enough battery for the next move
+                if self.battery >= self.MOVE_COST:
+                    success = self.move(path[1])
+                return
             else:
-                # Simple movement towards charging station
-                x, y = self.pos
-                charge_x, charge_y = self.home_charger
+                # Try all possible directions towards charger
+                possible_moves = self.get_possible_moves()
+                if not possible_moves:
+                    return
 
-                if x < charge_x and self.move((x + 1, y)):
-                    self.last_action = RoombaActions.MOVE_RIGHT
-                elif x > charge_x and self.move((x - 1, y)):
-                    self.last_action = RoombaActions.MOVE_LEFT
-                elif y < charge_y and self.move((x, y + 1)):
-                    self.last_action = RoombaActions.MOVE_UP
-                elif y > charge_y and self.move((x, y - 1)):
-                    self.last_action = RoombaActions.MOVE_DOWN
+                # Sort moves by distance to charger
+                moves_with_distances = []
+                for possible_pos in possible_moves:
+                    dist_to_charger = abs(possible_pos[0] - self.home_charger[0]) + abs(
+                        possible_pos[1] - self.home_charger[1]
+                    )
+                    moves_with_distances.append((dist_to_charger, possible_pos))
 
-        else:  # Normal operation
-            # Try to clean current cell
-            if self.clean_current_cell():
+                # Try the move that gets us closest to charger
+                moves_with_distances.sort()  # Sort by distance
+                for _, move_pos in moves_with_distances:
+                    if self.move(move_pos):
+                        return
                 return
 
-            # If can't clean, try to move to a random possible position
-            possible_moves = self.get_possible_moves()
-            if possible_moves:
-                new_pos = self.random.choice(possible_moves)
-                if self.move(new_pos):
-                    # Update last action based on movement direction
-                    x_diff = new_pos[0] - self.pos[0]
-                    y_diff = new_pos[1] - self.pos[1]
-                    if x_diff > 0:
-                        self.last_action = RoombaActions.MOVE_RIGHT
-                    elif x_diff < 0:
-                        self.last_action = RoombaActions.MOVE_LEFT
-                    elif y_diff > 0:
-                        self.last_action = RoombaActions.MOVE_UP
-                    else:
-                        self.last_action = RoombaActions.MOVE_DOWN
+        # Clean current cell if dirty
+        if self.clean_current_cell():
+            return
+
+        # Go to nearest known dirty cell
+        if self.dirty_cells_memory:
+            nearest_dirty = min(
+                self.dirty_cells_memory,
+                key=lambda pos: abs(pos[0] - self.pos[0]) + abs(pos[1] - self.pos[1]),
+            )
+            path = self.find_path_to_target(nearest_dirty)
+            if path and len(path) > 1:
+                self.move(path[1])
+                return
+
+        # Explore unknown areas
+        frontier = self.get_unexplored_frontier()
+        if frontier:
+            nearest_frontier = min(
+                frontier,
+                key=lambda pos: abs(pos[0] - self.pos[0]) + abs(pos[1] - self.pos[1]),
+            )
+            path = self.find_path_to_target(nearest_frontier)
+            if path and len(path) > 1:
+                self.move(path[1])
+                return
+
+        # If nothing else to do, move randomly
+        possible_moves = self.get_possible_moves()
+        if possible_moves:
+            self.move(self.random.choice(possible_moves))

@@ -1,13 +1,17 @@
-from mesa.visualization.modules import CanvasGrid
+from mesa.visualization.modules import CanvasGrid, ChartModule, PieChartModule
 from mesa.visualization.ModularVisualization import ModularServer
+from mesa.visualization.UserParam import Slider
 from src.model.room import RoomModel
-from src.agents.roomba import Roomba  # Make sure to import Roomba
+from src.agents.roomba import Roomba
 import socket
 import sys
+
+
 def agent_portrayal(agent):
     """Single portrayal function to handle both Cell and Roomba agents"""
     if agent is None:
         return
+
     if isinstance(agent, Roomba):
         portrayal = {
             "Shape": "circle",
@@ -28,6 +32,8 @@ def agent_portrayal(agent):
         }
         portrayal["Color"] = colors[agent.state]
     return portrayal
+
+
 def find_free_port():
     """Find a free port to run the server"""
     ports_to_try = [8521, 8522, 8523, 8524, 8525]
@@ -40,9 +46,43 @@ def find_free_port():
         except OSError:
             continue
     return None
+
+
 def create_server():
-    # Create canvas element - just create one grid with agent_portrayal
+    # Create grid visualization
     grid = CanvasGrid(agent_portrayal, 10, 10, 500, 500)
+
+    # Create charts for monitoring metrics
+    clean_chart = ChartModule(
+        [
+            {"Label": "Clean_Percentage", "Color": "#00CC00"},
+            {"Label": "Total_Movements", "Color": "#CC0000"},
+        ]
+    )
+
+    # Pie chart for cell states
+    pie_chart = PieChartModule(
+        [
+            {"Label": "Clean", "Color": "white"},
+            {"Label": "Dirty", "Color": "brown"},
+            {"Label": "Obstacle", "Color": "gray"},
+        ]
+    )
+
+    # Model parameters with sliders
+    model_params = {
+        "width": Slider("Grid Width", 10, 5, 20, 1),
+        "height": Slider("Grid Height", 10, 5, 20, 1),
+        "n_agents": Slider("Number of Roombas", 1, 1, 5, 1),
+        "dirty_percent": Slider(
+            "Initial Dirty Cells", 0.3, 0.0, 1.0, 0.05
+        ),  # Cambiado a decimal
+        "obstacle_percent": Slider(
+            "Obstacle Percentage", 0.2, 0.0, 0.5, 0.05
+        ),  # Cambiado a decimal
+        "max_time": Slider("Maximum Time Steps", 1000, 100, 2000, 100),
+    }
+
     # Find an available port
     port = find_free_port()
     if port is None:
@@ -50,12 +90,19 @@ def create_server():
             "Could not find an available port. Please close other running servers and try again."
         )
         sys.exit(1)
-    # Create server
+
+    # Create server with all visualization elements
     server = ModularServer(
         RoomModel,
-        [grid],
-        "Roomba Environment",
-        {"width": 10, "height": 10, "dirty_percent": 0.3, "obstacle_percent": 0.2},
+        [grid, clean_chart, pie_chart],
+        "Roomba Cleaning Simulation",
+        model_params,
     )
+
     server.port = port
     return server
+
+
+if __name__ == "__main__":
+    server = create_server()
+    server.launch()

@@ -84,30 +84,45 @@ class RoomModel(Model):
         # Count initial clean cells
         self.clean_cells_count = self.width * self.height
 
-        # Randomly place dirty cells
-        dirty_cells = int(self.width * self.height * self.dirty_percent)
+        # Calculate available positions and cells
+        total_cells = self.width * self.height
         positions = [(x, y) for x in range(self.width) for y in range(self.height)]
+
+        # Reserve charging station position for single agent
         if self.n_agents == 1:
-            positions.remove((1, 1))  # Remove charging station position
+            positions.remove((1, 1))
+            total_cells -= 1  # Reduce available cells by 1 for charging station
 
-        for pos in random.sample(positions, dirty_cells):
-            cell = self.grid.get_cell_list_contents([pos])[0]
-            cell.set_state("dirty")
-            self.clean_cells_count -= 1
+        # Calculate number of dirty and obstacle cells
+        dirty_cells = min(int(total_cells * self.dirty_percent), len(positions))
 
-        self.initial_dirty_cells = dirty_cells
+        # Place dirty cells
+        if dirty_cells > 0:
+            dirty_positions = random.sample(positions, dirty_cells)
+            for pos in dirty_positions:
+                cell = self.grid.get_cell_list_contents([pos])[0]
+                cell.set_state("dirty")
+                self.clean_cells_count -= 1
+                positions.remove(pos)  # Remove used positions
 
-        # Randomly place obstacles
-        obstacle_cells = int(self.width * self.height * self.obstacle_percent)
-        positions = [
-            pos
-            for pos in positions
-            if self.grid.get_cell_list_contents([pos])[0].state == "clean"
-        ]
-        for pos in random.sample(positions, obstacle_cells):
-            cell = self.grid.get_cell_list_contents([pos])[0]
-            cell.set_state("obstacle")
-            self.clean_cells_count -= 1
+            self.initial_dirty_cells = dirty_cells
+
+        # Calculate and place obstacles in remaining positions
+        remaining_cells = len(positions)
+        obstacle_cells = min(int(total_cells * self.obstacle_percent), remaining_cells)
+
+        if obstacle_cells > 0:
+            # Filter positions that are still clean
+            clean_positions = [
+                pos
+                for pos in positions
+                if self.grid.get_cell_list_contents([pos])[0].state == "clean"
+            ]
+            # Place obstacles
+            for pos in random.sample(clean_positions, obstacle_cells):
+                cell = self.grid.get_cell_list_contents([pos])[0]
+                cell.set_state("obstacle")
+                self.clean_cells_count -= 1
 
     def init_roombas(self):
         """Initialize multiple Roombas with charging stations"""
